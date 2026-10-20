@@ -109,12 +109,20 @@ async function searchApi(api, kw) {
   return d.list;
 }
 
+function epCount(v) {
+  const groups = String(v.vod_play_url || '').split('$$$');
+  return groups.reduce((m, g) => Math.max(m, g.split('#').filter(Boolean).length), 0);
+}
+
 function pickVod(list, kw) {
   if (!list.length) return null;
-  const exact = list.find((v) => v.vod_name === kw);
-  if (exact) return exact;
-  const contains = list.find((v) => v.vod_name && (v.vod_name.includes(kw) || kw.includes(v.vod_name)));
-  return contains || list[0];
+  // among real name matches, prefer the entry with the most episodes
+  // (fullest version); with no name match at all, keep the old list[0] behavior
+  const exact = list.filter((v) => v.vod_name === kw);
+  if (exact.length) return exact.slice().sort((a, b) => epCount(b) - epCount(a))[0];
+  const contains = list.filter((v) => v.vod_name && (v.vod_name.includes(kw) || kw.includes(v.vod_name)));
+  if (contains.length) return contains.slice().sort((a, b) => epCount(b) - epCount(a))[0];
+  return list[0];
 }
 
 // returns [{title, url}] for one vod entry, in episode order
@@ -139,11 +147,11 @@ function vodEpisodes(vod) {
 }
 
 async function resolveStreams(type, rawId, hint) {
-  // parse episode target
+  // parse episode target (episode number is the last segment in both
+  // tt:season:ep and kitsu:id:ep id shapes)
   const parts = rawId.split(':');
   let wantEp = 0;
-  if (parts[0] === 'tt' && parts.length >= 3) wantEp = parseInt(parts[2], 10) || 0;
-  if (parts[0] === 'kitsu' && parts.length >= 4) wantEp = parseInt(parts[3], 10) || 0;
+  if (parts.length >= 3) wantEp = parseInt(parts[parts.length - 1], 10) || 0;
 
   const titles = await titleCandidates(type, rawId, hint);
   const streams = [];
@@ -162,7 +170,7 @@ async function resolveStreams(type, rawId, hint) {
         const [w] = ordered.splice(wantEp - 1, 1);
         ordered.unshift(w);
       }
-      for (const e of ordered.slice(0, 80)) {
+      for (const e of ordered.slice(0, 2000)) {
         streams.push({
           name: `${api.name} · ${e.name}`,
           title: `${vod.vod_name} ${e.name}（${api.name}）`,
