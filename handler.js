@@ -198,7 +198,12 @@ async function handler(req, res) {
   };
   try {
     const u = new URL(req.url, 'http://x');
-    const path = u.pathname;
+    let path = u.pathname;
+    // Vercel rewrites deliver the function path (/api/index.js...) as req.url;
+    // strip it so the Stremio routes below match on any host.
+    if (path === '/api/index.js' || path === '/api') path = '/';
+    else if (path.startsWith('/api/index.js/')) path = path.slice('/api/index.js'.length);
+    else if (path.startsWith('/api/')) path = path.slice(4);
     if (path === '/' ) return send(200, { ok: true, name: MANIFEST.name });
     if (path === '/manifest.json') return send(200, MANIFEST);
     const m = path.match(/^\/stream\/(movie|series)\/([^/]+)\.json$/);
