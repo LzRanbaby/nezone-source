@@ -183,6 +183,62 @@ async function resolveStreams(type, rawId, hint) {
   return streams;
 }
 
+// ---- 源内直搜 / 详情（集数跟资源站走，不经 Cinemeta） ----
+function remarksEp(remarks) {
+  const m = String(remarks || '').match(/(\d+)\s*集/);
+  return m ? parseInt(m[1], 10) : 0;
+}
+
+async function searchCatalog(wd) {
+  const byName = new Map();
+  for (let i = 0; i < APIS.length; i++) {
+    const api = APIS[i];
+    const d = await cached(`cat:${api.name}:${wd}`, () =>
+      fetchJSON(`${api.base}?ac=list&wd=${encodeURIComponent(wd)}`, 12000)
+    );
+    if (!d || !Array.isArray(d.list)) continue;
+    for (const v of d.list) {
+      if (!v.vod_name) continue;
+      const prev = byName.get(v.vod_name);
+      const cand = {
+        id: `nz:${i}:${v.vod_id}`,
+        name: v.vod_name,
+        poster: v.vod_pic || '',
+        remarks: v.vod_remarks || '',
+        type: v.type_name || '',
+        year: v.vod_year || '',
+        ep: Math.max(remarksEp(v.vod_remarks), prev ? prev.ep : 0),
+      };
+      if (!prev || cand.ep >= prev.ep) byName.set(v.vod_name, cand);
+    }
+  }
+  return [...byName.values()].slice(0, 30).map(({ ep, ...rest }) => rest);
+}
+
+async function vodDetail(apiIdx, vodId) {
+  const api = APIS[apiIdx];
+  if (!api) return null;
+  const d = await cached(`vodfull:${api.name}:${vodId}`, () =>
+    fetchJSON(`${api.base}?ac=detail&ids=${encodeURIComponent(vodId)}`, 15000)
+  );
+  if (!d || !Array.isArray(d.list) || !d.list.length) return null;
+  const vod = d.list[0];
+  const eps = vodEpisodes(vod).slice(0, 2000);
+  const desc = String(vod.vod_content || vod.vod_blurb || '')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&nbsp;|&quot;|&amp;/g, ' ')
+    .trim();
+  return {
+    name: vod.vod_name,
+    poster: vod.vod_pic || '',
+    remarks: vod.vod_remarks || '',
+    year: vod.vod_year || '',
+    area: vod.vod_area || '',
+    desc,
+    episodes: eps.map((e) => ({ name: e.name, url: e.url })),
+  };
+}
+
 const MANIFEST = {
   id: 'app.nezone.source',
   version: '1.0.0',
@@ -214,6 +270,21 @@ async function handler(req, res) {
     else if (path.startsWith('/api/')) path = path.slice(4);
     if (path === '/' ) return send(200, { ok: true, name: MANIFEST.name });
     if (path === '/manifest.json') return send(200, MANIFEST);
+    if (path === '/search.json') {
+      const wd = (u.searchParams.get('wd') || '').trim();
+      if (!wd) return send(200, { metas: [] });
+      return send(200, { metas: await searchCatalog(wd) });
+    }
+    if (path === '/vod.json') {
+      const a = parseInt(u.searchParams.get('a') || '0', 10) || 0;
+      const id = u.searchParams.get('id') || '';
+      const detail = await vodDetail(a, id);
+      if (!detail) return send(404, { error: 'not found' });
+      if (u.searchParams.get('lite')) {
+        return send(200, { name: detail.name, count: detail.episodes.length, remarks: detail.remarks });
+      }
+      return send(200, detail);
+    }
     const m = path.match(/^\/stream\/(movie|series)\/([^/]+)\.json$/);
     if (m) {
       const type = m[1];
